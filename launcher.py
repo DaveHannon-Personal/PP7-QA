@@ -649,17 +649,31 @@ class LauncherApp(tk.Tk):
 
     # ── Command runner ────────────────────────────────────────────────────────
     def _stream_process(self, proc: subprocess.Popen, on_done=None):
-        """Read stdout/stderr lines in background, write to log. Call on_done when finished."""
+        """Read stdout/stderr lines in background, write to log. Call on_done when finished.
+        Handles both \\n-terminated lines and \\r-terminated progress lines (e.g. ollama pull)."""
         def _run():
-            for line in proc.stdout:
-                tag = ""
-                if any(w in line.lower() for w in ("error", "failed", "fatal")):
-                    tag = "err"
-                elif any(w in line.lower() for w in ("warning", "warn")):
-                    tag = "warn"
-                elif any(w in line.lower() for w in ("done", "successfully", "pulled", "started", "running")):
-                    tag = "ok"
-                self.log_write(line, tag)
+            buf = ""
+            while True:
+                ch = proc.stdout.read(1)
+                if not ch:
+                    break
+                if ch in ("\n", "\r"):
+                    line = buf.strip()
+                    buf = ""
+                    if not line:
+                        continue
+                    tag = ""
+                    if any(w in line.lower() for w in ("error", "failed", "fatal")):
+                        tag = "err"
+                    elif any(w in line.lower() for w in ("warning", "warn")):
+                        tag = "warn"
+                    elif any(w in line.lower() for w in ("done", "successfully", "pulled", "started", "running")):
+                        tag = "ok"
+                    self.log_write(line + "\n", tag)
+                else:
+                    buf += ch
+            if buf.strip():
+                self.log_write(buf.strip() + "\n", "")
             proc.wait()
             if on_done:
                 self.after(0, on_done)
@@ -701,9 +715,24 @@ class LauncherApp(tk.Tk):
         proc = run_cmd(cmd)
         self._stream_process(proc, on_done=self._check_prereqs)
 
+    def _model_already_pulled(self, model: str) -> bool:
+        """Return True if the model is already present in ollama."""
+        try:
+            r = subprocess.run(
+                ["ollama", "list"], capture_output=True, text=True, timeout=8
+            )
+            return model.lower() in r.stdout.lower()
+        except Exception:
+            return False
+
     def _pull_model(self):
         model = self.model_var.get().strip()
         if not model:
+            return
+        if self._model_already_pulled(model):
+            self.log_line(f"✔  Model '{model}' is already present — skipping pull", "ok")
+            self.after(0, lambda: self._model_status.configure(text="✔ Already present", fg=C["success"]))
+            write_env({"OLLAMA_MODEL": model})
             return
         self.log_line(f"── Pulling model: {model} ──", "info")
         self.after(0, lambda: self._model_status.configure(text="Pulling…", fg=C["warning"]))
@@ -736,9 +765,13 @@ class LauncherApp(tk.Tk):
                 self.log_line("✔  .env created", "ok")
             model = self.model_var.get().strip()
             if model and shutil.which("ollama"):
-                self.log_line(f"── Pulling model {model} ──", "info")
-                proc = run_cmd(["ollama", "pull", model])
-                self._stream_process(proc, on_done=lambda: self.log_line("══ Setup Complete ══", "ok"))
+                if self._model_already_pulled(model):
+                    self.log_line(f"✔  Model '{model}' already present — skipping pull", "ok")
+                    self.log_line("══ Setup Complete ══", "ok")
+                else:
+                    self.log_line(f"── Pulling model {model} ──", "info")
+                    proc = run_cmd(["ollama", "pull", model])
+                    self._stream_process(proc, on_done=lambda: self.log_line("══ Setup Complete ══", "ok"))
             else:
                 self.log_line("══ Setup Complete ══", "ok")
         threading.Thread(target=_run, daemon=True).start()
