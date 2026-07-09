@@ -1,0 +1,88 @@
+version: "3.9"
+
+# PP7-QA Docker Compose
+# Runs two services: Next.js frontend + FastAPI backend.
+# Ollama AI runs NATIVELY on the host (for Apple Silicon GPU / Metal acceleration).
+# On other platforms (Linux/Windows with GPU), uncomment the ollama service below.
+#
+# Quick start:
+#   1. Install Ollama: https://ollama.com
+#   2. ollama pull llama3.2:3b
+#   3. docker compose up --build
+
+services:
+  # ── Backend API (FastAPI + SQLite) ──────────────────────────────────────────
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: pp7qa-api
+    restart: unless-stopped
+    ports:
+      - "${API_PORT:-8000}:8000"
+    environment:
+      # ProPresenter 7 connection (user-configurable via Settings UI; these are fallbacks)
+      PROPRESENTER_URL: "${PROPRESENTER_URL:-http://host.docker.internal}"
+      PROPRESENTER_PORT: "${PROPRESENTER_PORT:-50001}"
+      # Ollama AI service — host.docker.internal points to the Mac host running Ollama natively
+      OLLAMA_URL: "${OLLAMA_URL:-http://host.docker.internal:11434}"
+      OLLAMA_MODEL: "${OLLAMA_MODEL:-llama3.2:3b}"
+      # Database (SQLite file inside the mounted /data volume)
+      DATABASE_URL: "sqlite:////data/pp7qa.db"
+    volumes:
+      - ./data:/data
+    extra_hosts:
+      # Allows the container to reach services running on the host machine
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8000/health" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    # Optional memory limit — set API_MEMORY in .env (e.g. 512m, 1g)
+    # On macOS, total available memory is controlled by Docker Desktop preferences.
+    deploy:
+      resources:
+        limits:
+          memory: ${API_MEMORY:-1g}
+
+  # ── Frontend (Next.js) ──────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: pp7qa-frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: "http://localhost:${API_PORT:-8000}"
+      # Internal container-to-container URL (used by Next.js server components)
+      API_INTERNAL_URL: "http://api:8000"
+    depends_on:
+      api:
+        condition: service_healthy
+    # Optional memory limit — set FRONTEND_MEMORY in .env (e.g. 256m, 512m)
+    deploy:
+      resources:
+        limits:
+          memory: ${FRONTEND_MEMORY:-512m}
+  # ── Ollama (Optional — uncomment for Linux/Windows with NVIDIA GPU) ─────────
+  # ollama:
+  #   image: ollama/ollama:latest
+  #   container_name: pp7qa-ollama
+  #   restart: unless-stopped
+  #   ports:
+  #     - "11434:11434"
+  #   volumes:
+  #     - ollama-models:/root/.ollama
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             count: 1
+  #             capabilities: [gpu]
+
+  # volumes:
+  #   ollama-models:
