@@ -573,6 +573,16 @@ class LauncherApp(tk.Tk):
     def log_line(self, text: str, tag: str = ""):
         self.log_write(text.rstrip() + "\n", tag)
 
+    def log_progress(self, text: str):
+        """Overwrite the last line in the log (for live download/progress updates)."""
+        def _do():
+            self.log.configure(state="normal")
+            self.log.delete("end-1l linestart", "end-1l lineend")
+            self.log.insert("end-1l linestart", text.rstrip())
+            self.log.see("end")
+            self.log.configure(state="disabled")
+        self.after(0, _do)
+
     def _clear_log(self):
         self.log.configure(state="normal")
         self.log.delete("1.0", "end")
@@ -719,18 +729,51 @@ class LauncherApp(tk.Tk):
         self._stream_process(proc, on_done=self._check_prereqs)
 
     def _install_ollama_windows(self):
-        """Try winget first; fall back to opening the download page."""
-        if shutil.which("winget"):
-            self.log_line("── Installing Ollama via winget ──", "info")
-            self.log_line("   This may take a minute. Check progress in the log below.", "muted")
-            proc = run_cmd(["winget", "install", "--id", "Ollama.Ollama", "-e", "--accept-package-agreements", "--accept-source-agreements"])
-            def _done():
-                self.log_line("✔  Ollama installed — restart this launcher to use it", "ok")
-                self._check_prereqs()
-            self._stream_process(proc, on_done=_done)
-        else:
-            self.log_line("winget not available — opening Ollama download page", "warn")
-            webbrowser.open("https://ollama.com/download/windows")
+        """Download OllamaSetup.exe with live progress, then launch the installer."""
+        import urllib.request
+        import tempfile
+
+        url = "https://ollama.com/download/OllamaSetup.exe"
+        dest = Path(tempfile.gettempdir()) / "OllamaSetup.exe"
+
+        self.log_line("── Downloading Ollama installer ──", "info")
+        self.log_line(f"   {url}", "muted")
+
+        def _run():
+            try:
+                downloaded = [0]
+                total = [0]
+                progress_started = [False]
+
+                def _progress(block_num, block_size, total_size):
+                    total[0] = total_size
+                    downloaded[0] = min(block_num * block_size, total_size)
+                    mb_done = downloaded[0] / 1_048_576
+                    if total_size > 0:
+                        pct = downloaded[0] * 100 // total_size
+                        mb_total = total_size / 1_048_576
+                        msg = f"  Downloading… {mb_done:.1f} / {mb_total:.1f} MB  ({pct}%)"
+                    else:
+                        msg = f"  Downloading… {mb_done:.1f} MB"
+                    if not progress_started[0]:
+                        self.log_line(msg)
+                        progress_started[0] = True
+                    else:
+                        self.log_progress(msg)
+
+                urllib.request.urlretrieve(url, dest, reporthook=_progress)
+                self.log_line(f"✔  Download complete — launching installer", "ok")
+                # Launch the GUI installer (user clicks through it)
+                import subprocess as _sp
+                _sp.Popen([str(dest)], creationflags=_sp.CREATE_NEW_CONSOLE)
+                self.log_line("   Follow the installer, then restart this launcher.", "muted")
+                self.after(5000, self._check_prereqs)
+            except Exception as e:
+                self.log_line(f"✖  Download failed: {e}", "err")
+                self.log_line("   Opening download page as fallback…", "warn")
+                webbrowser.open("https://ollama.com/download/windows")
+
+        threading.Thread(target=_run, daemon=True).start()
 
     def _model_already_pulled(self, model: str) -> bool:
         """Return True if the model is already present in ollama."""
