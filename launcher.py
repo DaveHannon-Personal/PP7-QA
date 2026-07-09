@@ -330,6 +330,9 @@ class LauncherApp(tk.Tk):
         if IS_MAC:
             self._btn(btn_row, "Install Docker (Homebrew)", lambda: self._install_tool("docker")).pack(side="left", padx=(0, 8))
             self._btn(btn_row, "Install Ollama (Homebrew)", lambda: self._install_tool("ollama")).pack(side="left")
+        elif IS_WIN:
+            self._btn(btn_row, "Download Docker Desktop", lambda: webbrowser.open("https://www.docker.com/products/docker-desktop/")).pack(side="left", padx=(0, 8))
+            self._btn(btn_row, "Download & Install Ollama", self._install_ollama_windows).pack(side="left")
 
         # ── AI Model section ───────────────────────────────────────────────
         self._section(inner, "AI Model")
@@ -714,6 +717,20 @@ class LauncherApp(tk.Tk):
         self.log_line(f"── Installing {tool} via Homebrew ──", "info")
         proc = run_cmd(cmd)
         self._stream_process(proc, on_done=self._check_prereqs)
+
+    def _install_ollama_windows(self):
+        """Try winget first; fall back to opening the download page."""
+        if shutil.which("winget"):
+            self.log_line("── Installing Ollama via winget ──", "info")
+            self.log_line("   This may take a minute. Check progress in the log below.", "muted")
+            proc = run_cmd(["winget", "install", "--id", "Ollama.Ollama", "-e", "--accept-package-agreements", "--accept-source-agreements"])
+            def _done():
+                self.log_line("✔  Ollama installed — restart this launcher to use it", "ok")
+                self._check_prereqs()
+            self._stream_process(proc, on_done=_done)
+        else:
+            self.log_line("winget not available — opening Ollama download page", "warn")
+            webbrowser.open("https://ollama.com/download/windows")
 
     def _model_already_pulled(self, model: str) -> bool:
         """Return True if the model is already present in ollama."""
